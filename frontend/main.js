@@ -2,15 +2,16 @@ document.getElementById("btn").addEventListener("click", async () => {
   const tosText = document.getElementById("tos").value;
 
   try {
-    const response = await fetch("http://localhost:8080/analyze", {
-      method: "POST",                          // 👈 important
+    const response = await fetch("/analyze", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tosText })        // 👈 JSON with tosText
+      body: JSON.stringify({ tosText })
     });
 
-    const data = await response.json();
+    const result = await response.json();
     document.getElementById("output").textContent =
-      JSON.stringify(data, null, 2);
+      JSON.stringify(result, null, 2);
+
   } catch (err) {
     document.getElementById("output").textContent =
       "Error: " + err;
