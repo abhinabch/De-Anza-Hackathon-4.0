@@ -3,17 +3,16 @@ document.getElementById("btn").addEventListener("click", async () => {
 
   try {
     const response = await fetch("http://localhost:8080/analyze", {
-      method: "POST",
+      method: "POST",                          // 👈 important
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tosText })
+      body: JSON.stringify({ tosText })        // 👈 JSON with tosText
     });
 
     const data = await response.json();
-
     document.getElementById("output").textContent =
       JSON.stringify(data, null, 2);
   } catch (err) {
     document.getElementById("output").textContent =
-      "Error communicating with backend:\n" + err;
+      "Error: " + err;
   }
 });
