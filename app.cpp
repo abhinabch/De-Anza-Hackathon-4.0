@@ -1,5 +1,12 @@
-// app.cpp
+// Tell Crow to use Boost.Asio instead of standalone Asio
+#define CROW_USE_BOOST
+
+// Tell Crow to generate main() for us
+#define CROW_MAIN
+
 #include "crow_all.h"
+
+// app.cpp  
 #include <string>
 #include <vector>
 #include <algorithm>
