@@ -1,3 +1,7 @@
+#define BOOST_ASIO_NO_DEPRECATED
+#define BOOST_ASIO_STANDALONE
+
+
 #define CROW_USE_BOOST
 #define CROW_MAIN
 #include "crow_all.h"
@@ -86,5 +90,6 @@ int main() {
         return crow::response{res};
     });
 
-    app.port(8080).multithreaded().run();
+    app.bindaddr("0.0.0.0").port(8080).run();
+
 }
