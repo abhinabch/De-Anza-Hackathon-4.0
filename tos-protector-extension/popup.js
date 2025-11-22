@@ -6,30 +6,51 @@ document.addEventListener('DOMContentLoaded', () => {
   const loading = document.getElementById('loading');
   const errorDiv = document.getElementById('error');
 
+  // This is where your code goes
   analyzeBtn.addEventListener('click', async () => {
-    // Get current tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
-    // Show loading
     loading.style.display = 'block';
     results.style.display = 'none';
     errorDiv.style.display = 'none';
     analyzeBtn.disabled = true;
-    status.textContent = 'Scanning page for Terms of Service...';
-    status.className = 'status scanning';
-
+    
+    const loadingText = document.getElementById('loadingText');
+    const progressBar = document.getElementById('progressBar');
+    
     try {
-      // Extract text from page
+      // Step 1: Auto-scroll (20%)
+      loadingText.textContent = 'Step 1/3: Auto-scrolling page...';
+      progressBar.style.width = '20%';
+      status.textContent = 'Auto-scrolling to load complete TOS...';
+      status.className = 'status scanning';
+
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: autoScrollPage
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Step 2: Extract text (50%)
+      loadingText.textContent = 'Step 2/3: Extracting text...';
+      progressBar.style.width = '50%';
+      status.textContent = 'Extracting Terms of Service text...';
+
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: extractTOSText
       });
 
       if (!result || result.length < 100) {
-        throw new Error('No Terms of Service found on this page');
+        throw new Error('No Terms of Service found. Try visiting a TOS/Privacy Policy page.');
       }
 
-      // Send to backend for analysis
+      // Step 3: Analyze (80%)
+      loadingText.textContent = 'Step 3/3: AI Analysis in progress...';
+      progressBar.style.width = '80%';
+      status.textContent = `Analyzing ${Math.round(result.length / 1000)}KB of text with AI...`;
+
       const response = await fetch('http://localhost:8080/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -37,43 +58,78 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       if (!response.ok) {
-        throw new Error('Backend server not responding. Make sure it\'s running on port 8080');
+        throw new Error('Backend server not responding. Start server on port 8080');
       }
 
       const data = await response.json();
-
-      // Display results
+      
+      // Complete (100%)
+      progressBar.style.width = '100%';
       displayResults(data);
 
     } catch (error) {
-      errorDiv.textContent = `Error: ${error.message}`;
+      errorDiv.textContent = `❌ ${error.message}`;
       errorDiv.style.display = 'block';
       status.textContent = 'Analysis failed';
       status.className = 'status warning';
     } finally {
       loading.style.display = 'none';
       analyzeBtn.disabled = false;
+      progressBar.style.width = '0%';
     }
   });
 
+  // Auto-scroll function
+  function autoScrollPage() {
+    return new Promise((resolve) => {
+      let totalHeight = 0;
+      let distance = 100;
+      let scrollDelay = 100;
+      
+      const timer = setInterval(() => {
+        const scrollHeight = document.body.scrollHeight;
+        window.scrollBy(0, distance);
+        totalHeight += distance;
+
+        if (totalHeight >= scrollHeight) {
+          clearInterval(timer);
+          window.scrollTo(0, 0);
+          resolve();
+        }
+      }, scrollDelay);
+    });
+  }
+
+  // Extract TOS text
   function extractTOSText() {
-    // Try to find TOS content on the page
-    const body = document.body.innerText;
+    const tosSelectors = [
+      '[class*="terms"]',
+      '[class*="privacy"]',
+      '[class*="policy"]',
+      '[id*="terms"]',
+      '[id*="privacy"]',
+      'main',
+      'article',
+      '.content',
+      '#content'
+    ];
     
-    // Look for common TOS indicators
-    const tosKeywords = ['terms of service', 'terms and conditions', 'user agreement', 
-                         'privacy policy', 'terms of use'];
-    
-    const lowerBody = body.toLowerCase();
-    for (const keyword of tosKeywords) {
-      if (lowerBody.includes(keyword)) {
-        return body;
+    for (const selector of tosSelectors) {
+      const element = document.querySelector(selector);
+      if (element && element.innerText.length > 500) {
+        return element.innerText;
       }
     }
     
-    return body.substring(0, 10000); // Return first 10k chars
+    const mainContent = document.querySelector('main, article, [role="main"]');
+    if (mainContent) {
+      return mainContent.innerText;
+    }
+    
+    return document.body.innerText;
   }
 
+  // Display results
   function displayResults(data) {
     loading.style.display = 'none';
     results.style.display = 'block';
@@ -93,11 +149,10 @@ document.addEventListener('DOMContentLoaded', () => {
     risksList.innerHTML = '';
     
     if (data.highlights) {
-      data.highlights.forEach(highlight => {
+      data.highlights.forEach((highlight) => {
         const riskItem = document.createElement('div');
         riskItem.className = 'risk-item';
         
-        // Extract category if present
         const categoryMatch = highlight.match(/\[(.*?)\]/);
         if (categoryMatch) {
           const category = document.createElement('div');
@@ -114,6 +169,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         risksList.appendChild(riskItem);
       });
+    }
+    
+    if (data.summary) {
+      const summaryDiv = document.createElement('div');
+      summaryDiv.style.cssText = 'background: #e8f4f8; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; line-height: 1.5;';
+      summaryDiv.innerHTML = `<strong>📊 Summary:</strong><br>${data.summary}`;
+      results.insertBefore(summaryDiv, results.firstChild);
     }
   }
 });
