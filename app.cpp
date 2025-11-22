@@ -14,6 +14,24 @@
 
 using namespace std;
 
+// -------------------------------
+// Cross-platform popen
+// -------------------------------
+#ifdef _WIN32
+    #define POPEN  _popen
+    #define PCLOSE _pclose
+#else
+    #define POPEN  popen
+    #define PCLOSE pclose
+#endif
+
+// -------------------------------
+// Convert Crow detail::r_string to std::string
+// -------------------------------
+string toStdString(const crow::json::detail::r_string& s) {
+    return string(s.begin(), s.end());
+}
+
 // ===========================
 //  Split text into chunks
 // ===========================
@@ -40,12 +58,12 @@ vector<string> chunkText(const string& text, size_t maxChars = 3000) {
 }
 
 // ===========================
-//  Call OpenAI with a chunk
+//  Call OpenAI with a chunk (cross-platform)
 // ===========================
 string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
     const char* key = getenv("OPENAI_API_KEY");
     if (!key) {
-        return R"({"summary":"Error: OPENAI_API_KEY not set","highlights":[]})";
+        return R"({"highlights":[]})";
     }
 
     // Build JSON payload
@@ -84,8 +102,12 @@ string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
         out.close();
     }
 
-    // Use PowerShell
-    string psCmd = 
+    // Cross-platform API call
+    string cmd;
+
+#ifdef _WIN32
+    // Windows: Use PowerShell
+    cmd = 
         "powershell -NoProfile -Command \""
         "try { "
         "$jsonBody = Get-Content -Raw -Encoding UTF8 " + tmpPath + "; "
@@ -96,8 +118,16 @@ string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
         "} catch { "
         "Write-Output '{\\\"highlights\\\":[]}'; "
         "}\"";
+#else
+    // Mac/Linux: Use curl
+    cmd =
+        "curl -s -X POST https://api.openai.com/v1/chat/completions "
+        "-H \"Content-Type: application/json\" "
+        "-H \"Authorization: Bearer " + string(key) + "\" "
+        "--data-binary @" + tmpPath;
+#endif
 
-    FILE* pipe = _popen(psCmd.c_str(), "r");
+    FILE* pipe = POPEN(cmd.c_str(), "r");
     if (!pipe) {
         return R"({"highlights":[]})";
     }
@@ -107,7 +137,7 @@ string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
     while (fgets(buffer, sizeof(buffer), pipe)) {
         response += buffer;
     }
-    _pclose(pipe);
+    PCLOSE(pipe);
 
     // Extract JSON
     size_t start = response.find('{');
@@ -151,14 +181,14 @@ crow::json::wvalue analyzeFullTOS(const string& tosText) {
         if (parsed.has("choices") && parsed["choices"].size() > 0) {
             auto& choice = parsed["choices"][0];
             if (choice.has("message") && choice["message"].has("content")) {
-                string content = choice["message"]["content"].s();
+                string content = toStdString(choice["message"]["content"].s());
                 
                 // Parse the inner JSON
                 auto inner = crow::json::load(content);
                 if (inner && inner.has("highlights")) {
                     auto& highlights = inner["highlights"];
                     for (size_t j = 0; j < highlights.size(); j++) {
-                        allHighlights.push_back(highlights[j].s());
+                        allHighlights.push_back(toStdString(highlights[j].s()));
                     }
                 }
             }
@@ -186,6 +216,30 @@ crow::json::wvalue analyzeFullTOS(const string& tosText) {
 int main() {
     crow::SimpleApp app;
 
+    // Serve index.html
+    CROW_ROUTE(app, "/")([]() {
+        ifstream file("frontend/index.html");
+        if (!file.good())
+            return crow::response(404, "index.html not found");
+
+        string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
+        crow::response res(content);
+        res.add_header("Content-Type", "text/html");
+        return res;
+    });
+
+    // Serve main.js
+    CROW_ROUTE(app, "/main.js")([]() {
+        ifstream file("frontend/main.js");
+        if (!file.good())
+            return crow::response(404, "main.js not found");
+
+        string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
+        crow::response res(content);
+        res.add_header("Content-Type", "application/javascript");
+        return res;
+    });
+
     // CORS headers
     CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Options)
     ([]() {
@@ -207,7 +261,7 @@ int main() {
             return res;
         }
 
-        string text = body["tosText"].s();
+        string text = toStdString(body["tosText"].s());
         
         cout << "Received TOS with " << text.length() << " characters\n";
 
