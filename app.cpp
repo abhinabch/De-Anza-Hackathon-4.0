@@ -5,107 +5,124 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <fstream>
 #include <algorithm>
 #include <iterator>
+#include <cstdlib>   // for getenv
+#include <cstdio>    // for popen / pclose
+
 #include <cstdlib>   // getenv
 #include <cstdio>    // popen, pclose
 #include <iostream>  // cout
 
 using namespace std;
 
-// ===========================
-//  Helper: escape for JSON
-// ===========================
-string escapeForJson(const string& s) {
-    string out;
-    out.reserve(s.size() * 2);
-    for (char c : s) {
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:   out += c;      break;
+// Simple TOS keyword analyzer
+vector<string> extractImportantClauses(const string& tosText) {
+    static const vector<string> keywords = {
+        "privacy", "data", "personal information", "personal info",
+        "liability", "arbitration", "dispute", "termination",
+        "fees", "billing", "third party", "third-party",
+        "tracking", "cookies"
+    };
+    vector<string> importantSentences;
+    string sentence;
+    for (char c : tosText) {
+        sentence.push_back(c);
+        if (c == '.') {
+            string lower = sentence;
+            transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            for (const auto& kw : keywords) {
+                if (lower.find(kw) != string::npos) {
+                    importantSentences.push_back(sentence);
+                    break;
+                }
+            }
+            sentence.clear();
         }
     }
-    return out;
+    if (!sentence.empty()) {
+        string lower = sentence;
+        transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        for (const auto& kw : keywords) {
+            if (lower.find(kw) != string::npos) {
+                importantSentences.push_back(sentence);
+                break;
+            }
+        }
+    }
+    return importantSentences;
 }
 
-// ===========================
-//  Call OpenAI via curl
-//  (writes JSON to /tmp file)
-// ===========================
+// Sanitize text so it can be safely embedded in JSON string for curl
+string sanitizeForJson(string s) {
+    for (char& c : s) {
+        if (c == '"')  c = '\'';  // replace " with '
+        if (c == '\n') c = ' ';   // flatten newlines
+        if (c == '\r') c = ' ';
+    }
+    return s;
+}
+
+// Call OpenAI Chat Completions API using curl
 string callOpenAI(const string& tosText) {
     const char* key = getenv("OPENAI_API_KEY");
     if (!key) {
-        return R"({"summary":"Error: OPENAI_API_KEY not set","highlights":[]})";
+        // Fallback JSON if key is missing
+        return R"({"summary":"Error: OPENAI_API_KEY not set on server","highlights":[]})";
     }
 
-    // 1) Build JSON payload as a string (no crow::json::dump needed)
-    string safeTos = escapeForJson(tosText);
+    string safeText = sanitizeForJson(tosText);
 
-    string systemPrompt =
-        "You are a Terms of Service analyzer. "
-        "Given raw TOS text, respond ONLY with strict JSON with keys: "
-        "summary (string) and highlights (array of strings). "
-        "No extra keys, no explanations outside JSON.";
-
-    string safeSystem = escapeForJson(systemPrompt);
-
+    // Build JSON payload for OpenAI
+    // We ask it to return EXACTLY the JSON shape our frontend expects.
     string jsonPayload =
         "{"
-          "\"model\":\"gpt-4o-mini\","
+          "\"model\":\"gpt-4o-mini\","        // cheap, fast model :contentReference[oaicite:0]{index=0}
           "\"messages\":["
             "{"
               "\"role\":\"system\","
-              "\"content\":\"" + safeSystem + "\""
+              "\"content\":\"You are a Terms of Service analyzer. Given raw TOS text, respond ONLY with strict JSON: {"
+                "\\\"summary\\\": string, "
+                "\\\"highlights\\\": array of strings. "
+                "Each highlight must be a short important clause. No extra keys, no explanations outside JSON."
+              "\""
             "},"
             "{"
               "\"role\":\"user\","
-              "\"content\":\"" + safeTos + "\""
+              "\"content\":\"" + safeText + "\""
             "}"
           "]"
         "}";
 
-    // 2) Write JSON to a temp file so curl can send it with -d @file
-    string tmpPath = "openai_payload.json";  // <--- changed from /tmp/...
-    {
-        ofstream out(tmpPath);
-        if (!out.good()) {
-            return R"({"summary":"Error: could not write temp JSON file","highlights":[]})";
-        }
-        out << jsonPayload;
-    }
-
-    // 3) Build curl command using -d @file (no quoting issues)
+    // Build curl command
     string cmd =
         "curl -s https://api.openai.com/v1/chat/completions "
         "-H \"Content-Type: application/json\" "
         "-H \"Authorization: Bearer " + string(key) + "\" "
-        "-d @" + tmpPath;
+        "-d \"" + jsonPayload + "\"";
 
-    cout << "CURL CMD:\n" << cmd << "\n\n";
-
+    // Run curl and capture output
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
-        return R"({"summary":"Error: failed to run curl","highlights":[]})";
+        return R"({"summary":"Error running curl","highlights":[]})";
     }
 
     char buffer[4096];
     string response;
-    while (fgets(buffer, sizeof(buffer), pipe)) {
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
         response += buffer;
     }
     pclose(pipe);
 
-    cout << "OpenAI raw response:\n" << response << "\n\n";
+    // The OpenAI Chat API returns an object with choices[0].message.content,
+    // which itself will be a JSON string. To keep it simple, we just return
+    // the raw API response and let the frontend parse content, OR you can
+    // later parse it with crow::json if you want.
     return response;
 }
 
-// ===========================
-//          MAIN
-// ===========================
+
 int main() {
     crow::SimpleApp app;
 
@@ -126,110 +143,64 @@ int main() {
         res.add_header("Content-Type", "text/html");
         return res;
     });
-
-    // ===========================
-    //   SERVE main.js
-    // ===========================
-    CROW_ROUTE(app, "/main.js")([]() {
-        ifstream file("frontend/main.js");
-        if (!file.good())
-            return crow::response(404, "main.js not found");
-
-        string content(
-            (istreambuf_iterator<char>(file)),
-            istreambuf_iterator<char>()
-        );
-
-        crow::response res(content);
-        res.add_header("Content-Type", "application/javascript");
-        return res;
-    });
-
-    // ===========================
-    //   POST /analyze  (AI-powered)
-// ===========================
+    
+    // OPTIONS /analyze -> Handle CORS preflight
     CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Post)
-    ([](const crow::request& req) {
-        auto body = crow::json::load(req.body);
+([](const crow::request& req) {
+    auto body = crow::json::load(req.body);
 
-        if (!body || !body.has("tosText"))
-            return crow::response(400, "Invalid JSON: expected { \"tosText\": \"...\" }");
+    if (!body || !body.has("tosText"))
+        return crow::response(400, "Invalid JSON: expected { \"tosText\": \"...\" }");
 
-        string text = body["tosText"].s();
+    string text = body["tosText"].s();
 
-        // 1) Call OpenAI
-        string apiResponse = callOpenAI(text);
+    // Call OpenAI
+    string apiResponse = callOpenAI(text);
 
-        // 2) Parse outer JSON
-        auto outer = crow::json::load(apiResponse);
-        if (!outer) {
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI returned non-JSON response";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = apiResponse;
-            return crow::response(res);
+    // Parse OpenAI's outer JSON
+    auto outer = crow::json::load(apiResponse);
+    if (!outer || !outer.has("choices")) {
+        // If OpenAI responded weirdly, just return some basic error JSON
+        return crow::response(
+            R"({"summary":"OpenAI error or bad response","highlights":[]})"
+        );
+    }
+
+    // Extract choices[0].message.content (this should be our inner JSON as string)
+    auto& choices = outer["choices"];
+    if (choices.size() == 0 || !choices[0].has("message") || !choices[0]["message"].has("content")) {
+        return crow::response(
+            R"({"summary":"OpenAI response missing content","highlights":[]})"
+        );
+    }
+
+    string contentJson = choices[0]["message"]["content"].s();
+
+    // Now parse the inner JSON that the model produced
+    auto inner = crow::json::load(contentJson);
+    if (!inner) {
+        return crow::response(
+            R"({"summary":"Failed to parse inner JSON from OpenAI","highlights":[]})"
+        );
+    }
+
+    // Return exactly what frontend expects
+    crow::json::wvalue res;
+    if (inner.has("summary"))
+        res["summary"] = inner["summary"].s();
+    else
+        res["summary"] = "No summary returned from OpenAI.";
+
+    res["highlights"] = crow::json::wvalue::list();
+    if (inner.has("highlights")) {
+        auto& arr = inner["highlights"];
+        for (size_t i = 0; i < arr.size(); i++) {
+            res["highlights"][i] = arr[i].s();
         }
+    }
 
-        // 3) Handle OpenAI error object
-        if (outer.has("error") && outer["error"].has("message")) {
-            string msg = outer["error"]["message"].s();
-
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI error: " + msg;
-            res["highlights"] = crow::json::wvalue::list();
-            return crow::response(res);
-        }
-
-        // 4) Normal case: expect choices[0].message.content
-        if (!outer.has("choices")) {
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI response missing 'choices'";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = apiResponse;
-            return crow::response(res);
-        }
-
-        auto& choices = outer["choices"];
-        if (choices.size() == 0 ||
-            !choices[0].has("message") ||
-            !choices[0]["message"].has("content")) {
-
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI response missing message.content";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = apiResponse;
-            return crow::response(res);
-        }
-
-        string contentJson = choices[0]["message"]["content"].s();
-
-        // 5) Parse the inner JSON produced by the model
-        auto inner = crow::json::load(contentJson);
-        if (!inner) {
-            crow::json::wvalue res;
-            res["summary"] = "Failed to parse inner JSON from OpenAI.";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = contentJson;
-            return crow::response(res);
-        }
-
-        // 6) Build final response
-        crow::json::wvalue res;
-        if (inner.has("summary"))
-            res["summary"] = inner["summary"].s();
-        else
-            res["summary"] = "No summary returned from OpenAI.";
-
-        res["highlights"] = crow::json::wvalue::list();
-        if (inner.has("highlights")) {
-            auto& arr = inner["highlights"];
-            for (size_t i = 0; i < arr.size(); i++) {
-                res["highlights"][i] = arr[i].s();
-            }
-        }
-
-        return crow::response(res);
-    });
-
-    app.port(8080).multithreaded().run();
+    return crow::response(res);
+});
+    
+    app.bindaddr("0.0.0.0").port(8080).multithreaded().run();
 }
