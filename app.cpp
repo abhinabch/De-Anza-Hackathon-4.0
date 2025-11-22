@@ -123,7 +123,7 @@ int main() {
         );
 
         crow::response res(content);
-        res.add_header("Content-Type", "text/html");
+        res.add_header("Content-Type", "application/javascript");
         return res;
     });
 
