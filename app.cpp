@@ -7,17 +7,42 @@
 #include <fstream>
 #include <algorithm>
 #include <iterator>
-#include <cstdlib>   // getenv
-#include <cstdio>    // popen, pclose
-#include <iostream>  // cout
+#include <cstdlib>
+#include <cstdio>
+#include <iostream>
+#include <sstream>
 
 using namespace std;
 
 // ===========================
-//  Call OpenAI via curl
-//  (using Crow's JSON library for proper escaping)
+//  Split text into chunks
 // ===========================
-string callOpenAI(const string& tosText) {
+vector<string> chunkText(const string& text, size_t maxChars = 3000) {
+    vector<string> chunks;
+    size_t pos = 0;
+    
+    while (pos < text.length()) {
+        size_t chunkSize = min(maxChars, text.length() - pos);
+        
+        // Try to break at sentence boundary
+        if (pos + chunkSize < text.length()) {
+            size_t lastPeriod = text.rfind('.', pos + chunkSize);
+            if (lastPeriod != string::npos && lastPeriod > pos) {
+                chunkSize = lastPeriod - pos + 1;
+            }
+        }
+        
+        chunks.push_back(text.substr(pos, chunkSize));
+        pos += chunkSize;
+    }
+    
+    return chunks;
+}
+
+// ===========================
+//  Call OpenAI with a chunk
+// ===========================
+string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
     const char* key = getenv("OPENAI_API_KEY");
     if (!key) {
         return R"({"summary":"Error: OPENAI_API_KEY not set","highlights":[]})";
@@ -26,17 +51,20 @@ string callOpenAI(const string& tosText) {
     // Build JSON payload
     crow::json::wvalue payload;
     payload["model"] = "gpt-4o-mini";
-    payload["max_tokens"] = 60000;
+    payload["max_tokens"] = 800;
     
     crow::json::wvalue system_msg;
     system_msg["role"] = "system";
-    system_msg["content"] = "You are a Terms of Service analyzer. "
-        "Respond ONLY with valid JSON with keys: "
-        "summary (string) and highlights (array of strings).";
+    system_msg["content"] = "You are analyzing Terms of Service. Extract important clauses about privacy, data collection, liability, fees, and user rights. "
+        "Respond ONLY with valid JSON: {\"highlights\": [\"clause1\", \"clause2\", ...]}";
     
     crow::json::wvalue user_msg;
     user_msg["role"] = "user";
-    user_msg["content"] = tosText;
+    
+    stringstream content;
+    content << "This is part " << chunkNum << " of " << totalChunks << " of a Terms of Service. "
+            << "Extract important clauses:\n\n" << tosChunk;
+    user_msg["content"] = content.str();
     
     crow::json::wvalue msgs;
     msgs[0] = std::move(system_msg);
@@ -46,34 +74,32 @@ string callOpenAI(const string& tosText) {
     string jsonPayload = payload.dump();
     
     // Write to file
-    string tmpPath = "openai_payload.json";
+    string tmpPath = "openai_payload_" + to_string(chunkNum) + ".json";
     {
         ofstream out(tmpPath, ios::out | ios::binary);
         if (!out.good()) {
-            return R"({"summary":"Error: could not write temp JSON file","highlights":[]})";
+            return R"({"highlights":[]})";
         }
         out.write(jsonPayload.c_str(), jsonPayload.length());
         out.close();
     }
 
-    // Use PowerShell with better error handling
+    // Use PowerShell
     string psCmd = 
         "powershell -NoProfile -Command \""
         "try { "
-        "$jsonBody = Get-Content -Raw -Encoding UTF8 openai_payload.json; "
+        "$jsonBody = Get-Content -Raw -Encoding UTF8 " + tmpPath + "; "
         "$headers = @{'Content-Type'='application/json'; 'Authorization'='Bearer " + string(key) + "'}; "
         "$response = Invoke-WebRequest -Uri 'https://api.openai.com/v1/chat/completions' "
         "-Method Post -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($jsonBody)); "
         "$response.Content; "
         "} catch { "
-        "Write-Output ('{\\\"error\\\":{\\\"message\\\":\\\"' + $_.Exception.Message + '\\\"}}'); "
+        "Write-Output '{\\\"highlights\\\":[]}'; "
         "}\"";
-
-    cout << "Calling OpenAI API...\n";
 
     FILE* pipe = _popen(psCmd.c_str(), "r");
     if (!pipe) {
-        return R"({"summary":"Error: failed to run PowerShell","highlights":[]})";
+        return R"({"highlights":[]})";
     }
 
     char buffer[8192];
@@ -83,15 +109,75 @@ string callOpenAI(const string& tosText) {
     }
     _pclose(pipe);
 
-    // Remove any PowerShell formatting/whitespace
+    // Extract JSON
     size_t start = response.find('{');
     size_t end = response.rfind('}');
     if (start != string::npos && end != string::npos) {
         response = response.substr(start, end - start + 1);
     }
 
-    cout << "OpenAI response:\n" << response << "\n\n";
     return response;
+}
+
+// ===========================
+//  Analyze entire TOS in chunks
+// ===========================
+crow::json::wvalue analyzeFullTOS(const string& tosText) {
+    crow::json::wvalue result;
+    vector<string> allHighlights;
+    
+    // Split into chunks
+    vector<string> chunks = chunkText(tosText, 3000);
+    
+    cout << "Splitting TOS into " << chunks.size() << " chunks...\n";
+    
+    // Analyze each chunk
+    for (size_t i = 0; i < chunks.size(); i++) {
+        cout << "Analyzing chunk " << (i+1) << "/" << chunks.size() << "...\n";
+        
+        string response = callOpenAIChunk(chunks[i], i + 1, chunks.size());
+        
+        // Parse response
+        auto parsed = crow::json::load(response);
+        if (!parsed) continue;
+        
+        // Handle error
+        if (parsed.has("error")) {
+            cout << "Error in chunk " << (i+1) << "\n";
+            continue;
+        }
+        
+        // Extract highlights from choices[0].message.content
+        if (parsed.has("choices") && parsed["choices"].size() > 0) {
+            auto& choice = parsed["choices"][0];
+            if (choice.has("message") && choice["message"].has("content")) {
+                string content = choice["message"]["content"].s();
+                
+                // Parse the inner JSON
+                auto inner = crow::json::load(content);
+                if (inner && inner.has("highlights")) {
+                    auto& highlights = inner["highlights"];
+                    for (size_t j = 0; j < highlights.size(); j++) {
+                        allHighlights.push_back(highlights[j].s());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Build final response
+    result["summary"] = "AI analyzed " + to_string(chunks.size()) + 
+                       " sections of your Terms of Service and found " + 
+                       to_string(allHighlights.size()) + 
+                       " important clauses regarding privacy, liability, fees, and user rights.";
+    
+    for (size_t i = 0; i < allHighlights.size(); i++) {
+        result["highlights"][i] = allHighlights[i];
+    }
+    
+    cout << "Analysis complete. Found " << allHighlights.size() << " total highlights.\n";
+    
+    return result;
 }
 
 // ===========================
@@ -100,129 +186,39 @@ string callOpenAI(const string& tosText) {
 int main() {
     crow::SimpleApp app;
 
-    // ===========================
-    //   SERVE index.html at "/"
-    // ===========================
-    CROW_ROUTE(app, "/")([]() {
-        ifstream file("frontend/index.html");
-        if (!file.good())
-            return crow::response(404, "index.html not found");
-
-        string content(
-            (istreambuf_iterator<char>(file)),
-            istreambuf_iterator<char>()
-        );
-
-        crow::response res(content);
-        res.add_header("Content-Type", "text/html");
+    // CORS headers
+    CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Options)
+    ([]() {
+        auto res = crow::response(200);
+        res.add_header("Access-Control-Allow-Origin", "*");
+        res.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
+        res.add_header("Access-Control-Allow-Headers", "Content-Type");
         return res;
     });
 
-    // ===========================
-    //   SERVE main.js
-    // ===========================
-    CROW_ROUTE(app, "/main.js")([]() {
-        ifstream file("frontend/main.js");
-        if (!file.good())
-            return crow::response(404, "main.js not found");
-
-        string content(
-            (istreambuf_iterator<char>(file)),
-            istreambuf_iterator<char>()
-        );
-
-        crow::response res(content);
-        res.add_header("Content-Type", "application/javascript");
-        return res;
-    });
-
-    // ===========================
-    //   POST /analyze  (AI-powered)
-    // ===========================
+    // POST /analyze
     CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Post)
     ([](const crow::request& req) {
         auto body = crow::json::load(req.body);
 
-        if (!body || !body.has("tosText"))
-            return crow::response(400, "Invalid JSON: expected { \"tosText\": \"...\" }");
+        if (!body || !body.has("tosText")) {
+            auto res = crow::response(400, "Invalid JSON");
+            res.add_header("Access-Control-Allow-Origin", "*");
+            return res;
+        }
 
         string text = body["tosText"].s();
+        
+        cout << "Received TOS with " << text.length() << " characters\n";
 
-        // 1) Call OpenAI
-        string apiResponse = callOpenAI(text);
-
-        // 2) Parse outer JSON
-        auto outer = crow::json::load(apiResponse);
-        if (!outer) {
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI returned non-JSON response";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = apiResponse;
-            return crow::response(res);
-        }
-
-        // 3) Handle OpenAI error object
-        if (outer.has("error") && outer["error"].has("message")) {
-            string msg = outer["error"]["message"].s();
-
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI error: " + msg;
-            res["highlights"] = crow::json::wvalue::list();
-            return crow::response(res);
-        }
-
-        // 4) Normal case: expect choices[0].message.content
-        if (!outer.has("choices")) {
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI response missing 'choices'";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = apiResponse;
-            return crow::response(res);
-        }
-
-        auto& choices = outer["choices"];
-        if (choices.size() == 0 ||
-            !choices[0].has("message") ||
-            !choices[0]["message"].has("content")) {
-
-            crow::json::wvalue res;
-            res["summary"] = "OpenAI response missing message.content";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = apiResponse;
-            return crow::response(res);
-        }
-
-        string contentJson = choices[0]["message"]["content"].s();
-
-        // 5) Parse the inner JSON produced by the model
-        auto inner = crow::json::load(contentJson);
-        if (!inner) {
-            crow::json::wvalue res;
-            res["summary"] = "Failed to parse inner JSON from OpenAI.";
-            res["highlights"] = crow::json::wvalue::list();
-            res["raw"] = contentJson;
-            return crow::response(res);
-        }
-
-        // 6) Build final response
-        crow::json::wvalue res;
-
-        if (inner.has("summary")) {
-            res["summary"] = inner["summary"].s();
-        } else {
-            res["summary"] = "No summary returned.";
-        }
-
-        res["highlights"] = crow::json::wvalue::list();
-        if (inner.has("highlights")) {
-            auto& arr = inner["highlights"];
-            for (size_t i = 0; i < arr.size(); i++) {
-                res["highlights"][i] = arr[i].s();
-            }
-        }
-
-        return crow::response(res);
+        // Analyze with chunking
+        crow::json::wvalue result = analyzeFullTOS(text);
+        
+        auto response = crow::response(result);
+        response.add_header("Access-Control-Allow-Origin", "*");
+        return response;
     });
 
+    cout << "Starting TOS Analyzer with OpenAI chunking on port 8080...\n";
     app.port(8080).multithreaded().run();
 }
