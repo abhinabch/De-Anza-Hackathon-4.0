@@ -34,7 +34,6 @@ string escapeForJson(const string& s) {
 
 // ===========================
 //  Call OpenAI via curl
-//  (writes JSON to /tmp file)
 // ===========================
 string callOpenAI(const string& tosText) {
     const char* key = getenv("OPENAI_API_KEY");
@@ -42,7 +41,6 @@ string callOpenAI(const string& tosText) {
         return R"({"summary":"Error: OPENAI_API_KEY not set","highlights":[]})";
     }
 
-    // 1) Build JSON payload as a string (no crow::json::dump needed)
     string safeTos = escapeForJson(tosText);
 
     string systemPrompt =
@@ -68,8 +66,7 @@ string callOpenAI(const string& tosText) {
           "]"
         "}";
 
-    // 2) Write JSON to a temp file so curl can send it with -d @file
-    string tmpPath = "openai_payload.json";  // <--- changed from /tmp/...
+    string tmpPath = "openai_payload.json";
     {
         ofstream out(tmpPath);
         if (!out.good()) {
@@ -78,7 +75,6 @@ string callOpenAI(const string& tosText) {
         out << jsonPayload;
     }
 
-    // 3) Build curl command using -d @file (no quoting issues)
     string cmd =
         "curl -s https://api.openai.com/v1/chat/completions "
         "-H \"Content-Type: application/json\" "
@@ -123,7 +119,7 @@ int main() {
         );
 
         crow::response res(content);
-        res.add_header("Content-Type", "application/javascript");
+        res.add_header("Content-Type", "text/html");   // FIXED
         return res;
     });
 
@@ -147,7 +143,7 @@ int main() {
 
     // ===========================
     //   POST /analyze  (AI-powered)
-// ===========================
+    // ===========================
     CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Post)
     ([](const crow::request& req) {
         auto body = crow::json::load(req.body);
@@ -215,10 +211,12 @@ int main() {
 
         // 6) Build final response
         crow::json::wvalue res;
-        if (inner.has("summary"))
+
+        if (inner.has("summary")) {
             res["summary"] = inner["summary"].s();
-        else
-            res["summary"] = "No summary returned from OpenAI.";
+        } else {
+            res["summary"] = "No summary returned.";
+        }
 
         res["highlights"] = crow::json::wvalue::list();
         if (inner.has("highlights")) {

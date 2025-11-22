@@ -60,57 +60,22 @@
     }
   </style>
 </head>
+
 <body>
   <h1>📄 TOS Analyzer</h1>
   <p>Enter your Terms of Service text below and click "Analyze" to extract important clauses.</p>
   
-  <textarea id="tos" rows="10" placeholder="Paste your Terms of Service text here...">We collect data and cookies. Your personal information may be shared with third parties. We are not liable for any damages. You agree to binding arbitration for dispute resolution.</textarea>
+  <textarea id="tos" rows="10" placeholder="Paste your Terms of Service text here...">
+We collect data and cookies. Your personal information may be shared with third parties. We are not liable for any damages. You agree to binding arbitration for dispute resolution.
+  </textarea>
   
   <br>
   <button id="btn">🔍 Analyze TOS</button>
   
   <h2>Analysis Results:</h2>
   <pre id="output">Click "Analyze TOS" to see results...</pre>
-  
-  <script>
-    document.getElementById("btn").addEventListener("click", async () => {
-      const tosText = document.getElementById("tos").value.trim();
-      const outputEl = document.getElementById("output");
-      const btnEl = document.getElementById("btn");
-      
-      if (!tosText) {
-        outputEl.textContent = "⚠️ Please enter some text to analyze.";
-        outputEl.className = "error";
-        return;
-      }
-      
-      // Show loading state
-      btnEl.disabled = true;
-      outputEl.textContent = "Analyzing...";
-      outputEl.className = "loading";
-      
-      try {
-        const response = await fetch("/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tosText })
-        });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        outputEl.textContent = JSON.stringify(data, null, 2);
-        outputEl.className = "success";
-      } catch (err) {
-        outputEl.textContent = "❌ Error connecting to backend:\n" + err.message + 
-          "\n\nMake sure the Crow server is running on http://localhost:8080";
-        outputEl.className = "error";
-      } finally {
-        btnEl.disabled = false;
-      }
-    });
-  </script>
+
+  <!-- Load separate JS file -->
+  <script src="main.js"></script>
 </body>
 </html>
