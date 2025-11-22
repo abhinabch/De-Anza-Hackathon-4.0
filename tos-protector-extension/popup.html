@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>TOS Analyzer Extension</title>
+  <style>
+    body {
+      width: 400px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      margin: 0;
+    }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    
+    .logo {
+      font-size: 28px;
+    }
+    
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      color: #333;
+    }
+    
+    .subtitle {
+      font-size: 12px;
+      color: #666;
+      margin: 0;
+    }
+    
+    .status {
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+    
+    .status.scanning {
+      background: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+    }
+    
+    .status.safe {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    
+    .status.warning {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    
+    .button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    
+    .button:hover {
+      transform: translateY(-2px);
+    }
+    
+    .button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .risks {
+      margin-top: 15px;
+    }
+    
+    .risk-item {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    
+    .risk-category {
+      font-weight: 600;
+      color: #667eea;
+      margin-bottom: 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    
+    .alternatives {
+      margin-top: 15px;
+      padding: 12px;
+      background: #e3f2fd;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    
+    .alternatives h3 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      color: #1976d2;
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 20px;
+    }
+    
+    .spinner {
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      width: 30px;
+      height: 30px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">🛡️</div>
+    <div>
+      <h1>TOS Protector</h1>
+      <p class="subtitle">Real-time TOS Analysis</p>
+    </div>
+  </div>
+
+  <div id="status" class="status scanning">
+    Ready to analyze Terms of Service
+  </div>
+
+  <button id="analyzeBtn" class="button">
+    Analyze Current Page
+  </button>
+
+  <div id="results" style="display: none;">
+    <div class="risks">
+      <h3 style="font-size: 14px; margin-bottom: 10px;">⚠️ Risks Found:</h3>
+      <div id="risksList"></div>
+    </div>
+  </div>
+
+  <div id="loading" class="loading" style="display: none;">
+    <div class="spinner"></div>
+    <p style="margin-top: 10px; font-size: 13px; color: #666;">Analyzing page...</p>
+  </div>
+
+  <div id="error" class="error" style="display: none;"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
