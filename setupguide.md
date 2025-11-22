@@ -57,7 +57,7 @@ Add these to your existing `package.json` if not already present:
 
 ```bash
 # Compile the C++ backend
-g++ -std=c++14 app.cpp -o server -lboost_system -lpthread
+$ g++ -std=c++17 app.cpp -o server -lws2_32 -lmswsock -lpthread
 
 # Run the backend server (port 8080)
 ./server

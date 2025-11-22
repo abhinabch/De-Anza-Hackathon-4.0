@@ -14,26 +14,8 @@
 using namespace std;
 
 // ===========================
-//  Helper: escape for JSON
-// ===========================
-string escapeForJson(const string& s) {
-    string out;
-    out.reserve(s.size() * 2);
-    for (char c : s) {
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:   out += c;      break;
-        }
-    }
-    return out;
-}
-
-// ===========================
 //  Call OpenAI via curl
+//  (using Crow's JSON library for proper escaping)
 // ===========================
 string callOpenAI(const string& tosText) {
     const char* key = getenv("OPENAI_API_KEY");
@@ -41,61 +23,74 @@ string callOpenAI(const string& tosText) {
         return R"({"summary":"Error: OPENAI_API_KEY not set","highlights":[]})";
     }
 
-    string safeTos = escapeForJson(tosText);
+    // Build JSON payload
+    crow::json::wvalue payload;
+    payload["model"] = "gpt-4o-mini";
+    payload["max_tokens"] = 500;
+    
+    crow::json::wvalue system_msg;
+    system_msg["role"] = "system";
+    system_msg["content"] = "You are a Terms of Service analyzer. "
+        "Respond ONLY with valid JSON with keys: "
+        "summary (string) and highlights (array of strings).";
+    
+    crow::json::wvalue user_msg;
+    user_msg["role"] = "user";
+    user_msg["content"] = tosText;
+    
+    crow::json::wvalue msgs;
+    msgs[0] = std::move(system_msg);
+    msgs[1] = std::move(user_msg);
+    payload["messages"] = std::move(msgs);
 
-    string systemPrompt =
-        "You are a Terms of Service analyzer. "
-        "Given raw TOS text, respond ONLY with strict JSON with keys: "
-        "summary (string) and highlights (array of strings). "
-        "No extra keys, no explanations outside JSON.";
-
-    string safeSystem = escapeForJson(systemPrompt);
-
-    string jsonPayload =
-        "{"
-          "\"model\":\"gpt-4o-mini\","
-          "\"messages\":["
-            "{"
-              "\"role\":\"system\","
-              "\"content\":\"" + safeSystem + "\""
-            "},"
-            "{"
-              "\"role\":\"user\","
-              "\"content\":\"" + safeTos + "\""
-            "}"
-          "]"
-        "}";
-
+    string jsonPayload = payload.dump();
+    
+    // Write to file
     string tmpPath = "openai_payload.json";
     {
-        ofstream out(tmpPath);
+        ofstream out(tmpPath, ios::out | ios::binary);
         if (!out.good()) {
             return R"({"summary":"Error: could not write temp JSON file","highlights":[]})";
         }
-        out << jsonPayload;
+        out.write(jsonPayload.c_str(), jsonPayload.length());
+        out.close();
     }
 
-    string cmd =
-        "curl -s https://api.openai.com/v1/chat/completions "
-        "-H \"Content-Type: application/json\" "
-        "-H \"Authorization: Bearer " + string(key) + "\" "
-        "-d @" + tmpPath;
+    // Use PowerShell with better error handling
+    string psCmd = 
+        "powershell -NoProfile -Command \""
+        "try { "
+        "$jsonBody = Get-Content -Raw -Encoding UTF8 openai_payload.json; "
+        "$headers = @{'Content-Type'='application/json'; 'Authorization'='Bearer " + string(key) + "'}; "
+        "$response = Invoke-WebRequest -Uri 'https://api.openai.com/v1/chat/completions' "
+        "-Method Post -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($jsonBody)); "
+        "$response.Content; "
+        "} catch { "
+        "Write-Output ('{\\\"error\\\":{\\\"message\\\":\\\"' + $_.Exception.Message + '\\\"}}'); "
+        "}\"";
 
-    cout << "CURL CMD:\n" << cmd << "\n\n";
+    cout << "Calling OpenAI API...\n";
 
-    FILE* pipe = popen(cmd.c_str(), "r");
+    FILE* pipe = _popen(psCmd.c_str(), "r");
     if (!pipe) {
-        return R"({"summary":"Error: failed to run curl","highlights":[]})";
+        return R"({"summary":"Error: failed to run PowerShell","highlights":[]})";
     }
 
-    char buffer[4096];
+    char buffer[8192];
     string response;
     while (fgets(buffer, sizeof(buffer), pipe)) {
         response += buffer;
     }
-    pclose(pipe);
+    _pclose(pipe);
 
-    cout << "OpenAI raw response:\n" << response << "\n\n";
+    // Remove any PowerShell formatting/whitespace
+    size_t start = response.find('{');
+    size_t end = response.rfind('}');
+    if (start != string::npos && end != string::npos) {
+        response = response.substr(start, end - start + 1);
+    }
+
+    cout << "OpenAI response:\n" << response << "\n\n";
     return response;
 }
 
@@ -119,7 +114,7 @@ int main() {
         );
 
         crow::response res(content);
-        res.add_header("Content-Type", "text/html");   // FIXED
+        res.add_header("Content-Type", "text/html");
         return res;
     });
 
