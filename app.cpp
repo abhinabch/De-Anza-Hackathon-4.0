@@ -1,7 +1,8 @@
-#define CROW_MAIN
+#define BOOST_ASIO_NO_DEPRECATED
+#define BOOST_ASIO_STANDALONE
 #define CROW_USE_BOOST
+#define CROW_MAIN
 #include "crow_all.h"
-
 #include <string>
 #include <vector>
 #include <fstream>
@@ -10,10 +11,13 @@
 #include <iterator>
 #include <cstdlib>   // for getenv
 #include <cstdio>    // for popen / pclose
+<<<<<<< HEAD
 
 #include <cstdlib>   // getenv
 #include <cstdio>    // popen, pclose
 #include <iostream>  // cout
+=======
+>>>>>>> parent of 9dbfadd (AI works)
 
 using namespace std;
 
@@ -125,20 +129,14 @@ string callOpenAI(const string& tosText) {
 
 int main() {
     crow::SimpleApp app;
-
-    // ===========================
-    //   SERVE index.html at "/"
-    // ===========================
+    
+    // Serve index.html from frontend directory
     CROW_ROUTE(app, "/")([]() {
         ifstream file("frontend/index.html");
         if (!file.good())
-            return crow::response(404, "index.html not found");
-
-        string content(
-            (istreambuf_iterator<char>(file)),
-            istreambuf_iterator<char>()
-        );
-
+            return crow::response(404, "index.html not found in frontend/ directory");
+        
+        string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
         crow::response res(content);
         res.add_header("Content-Type", "text/html");
         return res;
