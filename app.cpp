@@ -26,7 +26,7 @@ string callOpenAI(const string& tosText) {
     // Build JSON payload
     crow::json::wvalue payload;
     payload["model"] = "gpt-4o-mini";
-    payload["max_tokens"] = 500;
+    payload["max_tokens"] = 60000;
     
     crow::json::wvalue system_msg;
     system_msg["role"] = "system";
