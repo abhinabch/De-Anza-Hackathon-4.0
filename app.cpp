@@ -11,50 +11,41 @@
 #include <cstdio>
 #include <iostream>
 #include <sstream>
-#include <thread>
-#include <future>
 
 using namespace std;
 
-// -------------------------------
-// Cross-platform popen
-// -------------------------------
-#ifdef _WIN32
-    #define POPEN  _popen
-    #define PCLOSE _pclose
-#else
-    #define POPEN  popen
-    #define PCLOSE pclose
-#endif
-
-// -------------------------------
-// Convert Crow detail::r_string to std::string
-// -------------------------------
-string toStdString(const crow::json::detail::r_string& s) {
-    return string(s.begin(), s.end());
-}
-
 // ===========================
-//  Multi-Model AI Pipeline
+//  Split text into chunks
 // ===========================
-struct AnalysisPipeline {
-    string apiKey;
+vector<string> chunkText(const string& text, size_t maxChars = 3000) {
+    vector<string> chunks;
+    size_t pos = 0;
     
-    AnalysisPipeline() {
-        const char* key = getenv("OPENAI_API_KEY");
-        apiKey = key ? key : "";
+    while (pos < text.length()) {
+        size_t chunkSize = min(maxChars, text.length() - pos);
+        
+        // Try to break at sentence boundary
+        if (pos + chunkSize < text.length()) {
+            size_t lastPeriod = text.rfind('.', pos + chunkSize);
+            if (lastPeriod != string::npos && lastPeriod > pos) {
+                chunkSize = lastPeriod - pos + 1;
+            }
+        }
+        
+        chunks.push_back(text.substr(pos, chunkSize));
+        pos += chunkSize;
     }
     
     return chunks;
 }
 
 // ===========================
-//  Call OpenAI with a chunk (cross-platform)
+//  Call OpenAI with a chunk
 // ===========================
 string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
     const char* key = getenv("OPENAI_API_KEY");
     if (!key) {
-        return R"({"highlights":[]})";
+        return R"({"summary":"Error: OPENAI_API_KEY not set","highlights":[]})";
     }
 
     // Build JSON payload
@@ -80,25 +71,21 @@ string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
     msgs[1] = std::move(user_msg);
     payload["messages"] = std::move(msgs);
 
-        string jsonPayload = payload.dump();
-        
-        // Write to file
-        string tmpPath = "analysis_" + analysisType + ".json";
-        {
-            ofstream out(tmpPath, ios::out | ios::binary);
-            if (!out.good()) {
-                return R"({"result":"File write error","highlights":[]})";
-            }
-            out.write(jsonPayload.c_str(), jsonPayload.length());
-            out.close();
+    string jsonPayload = payload.dump();
+    
+    // Write to file
+    string tmpPath = "openai_payload_" + to_string(chunkNum) + ".json";
+    {
+        ofstream out(tmpPath, ios::out | ios::binary);
+        if (!out.good()) {
+            return R"({"highlights":[]})";
         }
+        out.write(jsonPayload.c_str(), jsonPayload.length());
+        out.close();
+    }
 
-    // Cross-platform API call
-    string cmd;
-
-#ifdef _WIN32
-    // Windows: Use PowerShell
-    cmd = 
+    // Use PowerShell
+    string psCmd = 
         "powershell -NoProfile -Command \""
         "try { "
         "$jsonBody = Get-Content -Raw -Encoding UTF8 " + tmpPath + "; "
@@ -109,16 +96,8 @@ string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
         "} catch { "
         "Write-Output '{\\\"highlights\\\":[]}'; "
         "}\"";
-#else
-    // Mac/Linux: Use curl
-    cmd =
-        "curl -s -X POST https://api.openai.com/v1/chat/completions "
-        "-H \"Content-Type: application/json\" "
-        "-H \"Authorization: Bearer " + string(key) + "\" "
-        "--data-binary @" + tmpPath;
-#endif
 
-    FILE* pipe = POPEN(cmd.c_str(), "r");
+    FILE* pipe = _popen(psCmd.c_str(), "r");
     if (!pipe) {
         return R"({"highlights":[]})";
     }
@@ -128,98 +107,58 @@ string callOpenAIChunk(const string& tosChunk, int chunkNum, int totalChunks) {
     while (fgets(buffer, sizeof(buffer), pipe)) {
         response += buffer;
     }
-    PCLOSE(pipe);
+    _pclose(pipe);
 
-        // Extract JSON
-        size_t start = response.find('{');
-        size_t end = response.rfind('}');
-        if (start != string::npos && end != string::npos) {
-            response = response.substr(start, end - start + 1);
-        }
+    // Extract JSON
+    size_t start = response.find('{');
+    size_t end = response.rfind('}');
+    if (start != string::npos && end != string::npos) {
+        response = response.substr(start, end - start + 1);
+    }
 
-        return response;
-    }
+    return response;
+}
+
+// ===========================
+//  Analyze entire TOS in chunks
+// ===========================
+crow::json::wvalue analyzeFullTOS(const string& tosText) {
+    crow::json::wvalue result;
+    vector<string> allHighlights;
     
-    // Parallel analysis using multiple models
-    crow::json::wvalue analyzeMultiModel(const string& tosText) {
-        cout << "Starting multi-model parallel analysis...\n";
-        
-        // Launch 4 parallel analyses
-        auto privacyFuture = async(launch::async, [this, &tosText]() {
-            return callModelForAnalysis(tosText, "privacy", "gpt-4o-mini");
-        });
-        
-        auto financialFuture = async(launch::async, [this, &tosText]() {
-            return callModelForAnalysis(tosText, "financial", "gpt-4o-mini");
-        });
-        
-        auto rightsFuture = async(launch::async, [this, &tosText]() {
-            return callModelForAnalysis(tosText, "rights", "gpt-4o-mini");
-        });
-        
-        auto legalFuture = async(launch::async, [this, &tosText]() {
-            return callModelForAnalysis(tosText, "legal", "gpt-4o-mini");
-        });
-        
-        // Wait for all analyses to complete
-        string privacyResult = privacyFuture.get();
-        string financialResult = financialFuture.get();
-        string rightsResult = rightsFuture.get();
-        string legalResult = legalFuture.get();
-        
-        cout << "All parallel analyses complete.\n";
-        
-        // Parse all results
-        auto privacyJson = parseAnalysisResult(privacyResult);
-        auto financialJson = parseAnalysisResult(financialResult);
-        auto rightsJson = parseAnalysisResult(rightsResult);
-        auto legalJson = parseAnalysisResult(legalResult);
-        
-        // Combine results
-        crow::json::wvalue finalResult;
-        vector<string> allHighlights;
-        
-        // Collect all highlights with categories
-        addCategorizedHighlights(allHighlights, privacyJson, "Privacy & Data");
-        addCategorizedHighlights(allHighlights, financialJson, "Fees & Payments");
-        addCategorizedHighlights(allHighlights, rightsJson, "User Rights");
-        addCategorizedHighlights(allHighlights, legalJson, "Legal & Liability");
-        
-        // Build summary
-        stringstream summary;
-        summary << "Multi-model AI analysis completed using specialized models:\n\n";
-        summary << "🔒 Privacy Analysis: " << getResultSummary(privacyJson) << "\n";
-        summary << "💰 Financial Analysis: " << getResultSummary(financialJson) << "\n";
-        summary << "👤 Rights Analysis: " << getResultSummary(rightsJson) << "\n";
-        summary << "⚖️ Legal Analysis: " << getResultSummary(legalJson) << "\n\n";
-        summary << "Total: " << allHighlights.size() << " important clauses identified.";
-        
-        finalResult["summary"] = summary.str();
-        
-        for (size_t i = 0; i < allHighlights.size(); i++) {
-            finalResult["highlights"][i] = allHighlights[i];
-        }
-        
-        return finalResult;
-    }
+    // Split into chunks
+    vector<string> chunks = chunkText(tosText, 3000);
     
-private:
-    // Parse analysis result from OpenAI response
-    crow::json::rvalue parseAnalysisResult(const string& response) {
+    cout << "Splitting TOS into " << chunks.size() << " chunks...\n";
+    
+    // Analyze each chunk
+    for (size_t i = 0; i < chunks.size(); i++) {
+        cout << "Analyzing chunk " << (i+1) << "/" << chunks.size() << "...\n";
+        
+        string response = callOpenAIChunk(chunks[i], i + 1, chunks.size());
+        
+        // Parse response
         auto parsed = crow::json::load(response);
-        if (!parsed) return crow::json::rvalue();
+        if (!parsed) continue;
         
+        // Handle error
+        if (parsed.has("error")) {
+            cout << "Error in chunk " << (i+1) << "\n";
+            continue;
+        }
+        
+        // Extract highlights from choices[0].message.content
         if (parsed.has("choices") && parsed["choices"].size() > 0) {
             auto& choice = parsed["choices"][0];
             if (choice.has("message") && choice["message"].has("content")) {
-                string content = toStdString(choice["message"]["content"].s());
+                string content = choice["message"]["content"].s();
                 
                 // Parse the inner JSON
                 auto inner = crow::json::load(content);
                 if (inner && inner.has("highlights")) {
                     auto& highlights = inner["highlights"];
                     for (size_t j = 0; j < highlights.size(); j++) {
-                        allHighlights.push_back(toStdString(highlights[j].s()));
+                        allHighlights.push_back(highlights[j].s());
                     }
                 }
             }
@@ -247,30 +186,6 @@ private:
 int main() {
     crow::SimpleApp app;
 
-    // Serve index.html
-    CROW_ROUTE(app, "/")([]() {
-        ifstream file("frontend/index.html");
-        if (!file.good())
-            return crow::response(404, "index.html not found");
-
-        string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
-        crow::response res(content);
-        res.add_header("Content-Type", "text/html");
-        return res;
-    });
-
-    // Serve main.js
-    CROW_ROUTE(app, "/main.js")([]() {
-        ifstream file("frontend/main.js");
-        if (!file.good())
-            return crow::response(404, "main.js not found");
-
-        string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
-        crow::response res(content);
-        res.add_header("Content-Type", "application/javascript");
-        return res;
-    });
-
     // CORS headers
     CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Options)
     ([]() {
@@ -281,9 +196,9 @@ int main() {
         return res;
     });
 
-    // POST /analyze - Multi-model analysis
+    // POST /analyze
     CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::Post)
-    ([&pipeline](const crow::request& req) {
+    ([](const crow::request& req) {
         auto body = crow::json::load(req.body);
 
         if (!body || !body.has("tosText")) {
@@ -292,19 +207,18 @@ int main() {
             return res;
         }
 
-        string text = toStdString(body["tosText"].s());
+        string text = body["tosText"].s();
         
         cout << "Received TOS with " << text.length() << " characters\n";
 
-        // Run multi-model parallel analysis
-        crow::json::wvalue result = pipeline.analyzeMultiModel(text);
+        // Analyze with chunking
+        crow::json::wvalue result = analyzeFullTOS(text);
         
         auto response = crow::response(result);
         response.add_header("Access-Control-Allow-Origin", "*");
         return response;
     });
 
-    cout << "Starting Multi-Model TOS Analyzer on port 8080...\n";
-    cout << "Using specialized models for: Privacy, Financial, Rights, Legal\n";
+    cout << "Starting TOS Analyzer with OpenAI chunking on port 8080...\n";
     app.port(8080).multithreaded().run();
 }
