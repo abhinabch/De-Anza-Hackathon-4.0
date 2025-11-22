@@ -18,7 +18,7 @@ export default function TOSAnalyzer() {
     setResult(null);
 
     try {
-      const response = await fetch('http://localhost:8080/analyze', {
+      const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tosText })
