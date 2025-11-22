@@ -11,13 +11,7 @@
 #include <iterator>
 #include <cstdlib>   // for getenv
 #include <cstdio>    // for popen / pclose
-<<<<<<< HEAD
-
-#include <cstdlib>   // getenv
-#include <cstdio>    // popen, pclose
 #include <iostream>  // cout
-=======
->>>>>>> parent of 9dbfadd (AI works)
 
 using namespace std;
 
